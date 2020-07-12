@@ -62,14 +62,14 @@ Keras 向けの強化学習ライブラリである [Keras-rl](https://github.co
 + pygame 1.9.6
 
 
-## 2. ダウンロード
+## 2. download
 このレポジトリをダウンロードします。
 
 ``` bash
 > git clone https://github.com/pocokhc/agent57.git
 ```
 
-## 3. 実行
+## 3. Run the program
 examples にいくつか実行例が入っています。
 
 ``` bash
