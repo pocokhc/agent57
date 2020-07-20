@@ -291,7 +291,7 @@ class Actor():
         if self.recent_terminal:
             return 0  # 終了時はactionを出す必要がない
 
-        if self.training:
+        if not self.training:
             # テスト中はQ値最大
             action = np.argmax(self.get_qvals())
         else:
