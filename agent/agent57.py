@@ -701,9 +701,9 @@ class ActorRunner(rl.core.Agent):
         action = self.repeated_action
         if self.recent_terminal or (self.local_step % self.step_interval == 0):
             self.actor.forward_train_before(observation)
-            if self.training:
+            exp = self.actor.create_exp(True)
+            if exp is not None:
                 # expを送る
-                exp = self.actor.create_exp(True)
                 self.exp_q.put(exp)
                 exp = None
             action = self.actor.forward_train_after()

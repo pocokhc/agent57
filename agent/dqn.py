@@ -262,8 +262,8 @@ class DQN(rl.core.Agent):
         action = self.repeated_action
         if self.recent_terminal or (self.local_step % self.step_interval == 0):
             self.actor.forward_train_before(observation)
-            if self.training:
-                exp = self.actor.create_exp(False)
+            exp = self.actor.create_exp(False)
+            if exp is not None:
                 self.learner.add_exp(exp)
                 self.learner.train()
             action = self.actor.forward_train_after()

@@ -138,9 +138,10 @@ class Actor():
     def episode_begin(self):
         self.recent_terminal = False
         self.total_reward = 0
+        self.backward_run = False
 
         if self.lstm_type != LstmType.STATEFUL:
-            self.recent_actions = [ 0 for _ in range(self.reward_multisteps+1)]
+            self.recent_actions = [ 0 for _ in range(self.reward_multisteps)]
             self.recent_rewards = [ 0 for _ in range(self.reward_multisteps)]
             self.recent_rewards_multistep = 0
             self.recent_observations = [
@@ -149,7 +150,7 @@ class Actor():
             self.recent_reward_intrinsic = 0
         else:
             multi_len = self.reward_multisteps + self.lstmful_input_length - 1
-            self.recent_actions = [ 0 for _ in range(multi_len + 1)]
+            self.recent_actions = [ 0 for _ in range(multi_len)]
             self.recent_rewards = [ 0 for _ in range(multi_len)]
             self.recent_rewards_multistep = [ 0 for _ in range(self.lstmful_input_length)]
             tmp = self.burnin_length + self.input_sequence + multi_len
@@ -291,11 +292,11 @@ class Actor():
         if self.recent_terminal:
             return 0  # 終了時はactionを出す必要がない
 
-        if not self.training:
-            # テスト中はQ値最大
-            action = np.argmax(self.get_qvals())
-        else:
+        if self.training:
             action = self.action_policy.select_action(self)
+        else:
+            # テスト中はQ値最大
+            return np.argmax(self.get_qvals())
 
         # アクション保存
         self.recent_actions.pop(0)
@@ -327,9 +328,13 @@ class Actor():
 
 
     def backward(self, reward, terminal):
+        # terminal は env が終了状態ならTrue
         self.step += 1
 
-        # terminal は env が終了状態ならTrue
+        # terminal
+        self.recent_terminal = terminal
+        self.backward_run = True
+
         if not self.training:
             return []
 
@@ -352,19 +357,21 @@ class Actor():
         # multi step learning
         _tmp = 0
         for i in range(-self.reward_multisteps, 0):
-            _tmp += self.recent_rewards[i] * (self.gamma ** (-i))
+            _tmp += self.recent_rewards[i] * (self.gamma ** (self.reward_multisteps+i+1))
         if self.lstm_type != LstmType.STATEFUL:
             self.recent_rewards_multistep = _tmp
         else:
             self.recent_rewards_multistep.pop(0)
             self.recent_rewards_multistep.append(_tmp)
         
-        # terminal
-        self.recent_terminal = terminal
         return []
 
 
     def create_exp(self, calc_priority):
+        if not self.training:
+            return None
+        if not self.backward_run:
+            return None
 
         if not calc_priority:
             priority = 0
