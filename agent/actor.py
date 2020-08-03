@@ -352,7 +352,7 @@ class Actor():
         # multi step learning
         _tmp = 0
         for i in range(-self.reward_multisteps, 0):
-            _tmp += self.recent_rewards[i] * (self.gamma ** i)
+            _tmp += self.recent_rewards[i] * (self.gamma ** (-i))
         if self.lstm_type != LstmType.STATEFUL:
             self.recent_rewards_multistep = _tmp
         else:
