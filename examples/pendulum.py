@@ -152,6 +152,10 @@ def run_dqn(enable_train):
 
 
 class MyActor(ActorUser):
+    @staticmethod
+    def allocate(actor_index, actor_num):
+        return "/device:CPU:0"
+
     def getPolicy(self, actor_index, actor_num):
         return EpsilonGreedy(0.1)
 

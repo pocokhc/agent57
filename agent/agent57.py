@@ -294,7 +294,7 @@ class Agent57():
                 )
                 if self.enable_GPU:
                     actor = self.kwargs["actors"][i]
-                    actor_args = (actor.allocate,) + actor_args
+                    actor_args = (actor.allocate(i, actor_num),) + actor_args
                     ps = mp.Process(target=actor_run_allocate, args=actor_args)
                 else:
                     ps = mp.Process(target=actor_run, args=actor_args)
@@ -531,7 +531,9 @@ class ActorStop(rl.callbacks.Callback):
             raise KeyboardInterrupt()
 
 class ActorUser():
-    allocate = "/device:CPU:0"
+    @staticmethod
+    def allocate(actor_index, actor_num):
+        return "/device:CPU:0"
 
     def getPolicy(self, actor_index, actor_num):
         raise NotImplementedError()
