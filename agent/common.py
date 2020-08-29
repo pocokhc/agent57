@@ -72,9 +72,9 @@ def create_gamma_list_agent57(policy_num, gamma0=0.9999, gamma1=0.997, gamma2=0.
     assert policy_num > 0
     gamma_list = []
     for i in range(policy_num):
-        if i == 1:
+        if i == 0:
             g = gamma0
-        elif 2 <= i and i <= 6:
+        elif 1 <= i and i <= 6:
             g = 10*((2*i-6)/6)
             g = gamma1 + (gamma0 - gamma1)*sigmoid(g)
         elif i == 7:

@@ -1,8 +1,6 @@
 import gym
 from keras.optimizers import Adam
 
-import traceback
-
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
@@ -11,52 +9,54 @@ from agent.agent57 import ActorUser
 from agent.policy import EpsilonGreedy, AnnealingEpsilonGreedy
 from agent.memory import PERRankBaseMemory, PERProportionalMemory
 from agent.model import InputType, LstmType, UvfaType
-from agent.model import ValueModel
+from agent.model import ValueModel, DQNImageModel
 from agent.common import seed_everything
 from agent.callbacks import LoggerType
 
 from agent.main_runner import run_gym_dqn, run_play, run_replay, run_gym_agent57
 
+from agent.processor import PendulumProcessorForDQN
+
 
 seed_everything(42)
-ENV_NAME = "MountainCar-v0"
+ENV_NAME = "CartPole-v0"
 episode_save_dir = "tmp_{}.".format(ENV_NAME)
 
 
 def create_parameter(env, nb_steps):
-
+    
     kwargs = {
         "input_shape": env.observation_space.shape, 
         "input_type": InputType.VALUES,
-        "input_model": None,
+        "input_model": ValueModel(32, 1),
         "nb_actions": env.action_space.n,
 
         "memory": "PERRankBaseMemory",
         "memory_kwargs": {
-            "capacity": 100_000,
+            "capacity": 60_000,
             "alpha": 1.0,          # PERの確率反映率
             "beta_initial": 0.0,   # IS反映率の初期値(1.0が最大)
             "beta_steps": nb_steps,  # IS反映率の上昇step数
             "enable_is": True,     # ISを有効にするかどうか
         },
 
-        "optimizer_ext": Adam(lr=0.001),
-        "optimizer_int": Adam(lr=0.001),
-        "optimizer_rnd": Adam(lr=0.005),
-        "optimizer_emb": Adam(lr=0.005),
+        "optimizer_ext": Adam(lr=0.0005),
+        "optimizer_int": Adam(lr=0.0005),
+        "optimizer_rnd": Adam(lr=0.001),
+        "optimizer_emb": Adam(lr=0.001),
 
         # NN
         "batch_size": 16,     # batch_size
         "input_sequence": 4,         # 入力フレーム数
-        "dense_units_num": 64,       # dense層のユニット数
+        "dense_units_num": 32,       # dense層のユニット数
         "enable_dueling_network": True,
         "lstm_type": LstmType.STATELESS,           # 使用するLSTMアルゴリズム
-        "lstm_units_num": 64,             # LSTMのユニット数
-        "lstmful_input_length": 2,       # ステートフルLSTMの入力数
+        "lstm_units_num": 32,             # LSTMのユニット数
+        "lstmful_input_length": 1,       # ステートフルLSTMの入力数
 
         # train
         "memory_warmup_size": 1000,    # 初期のメモリー確保用step数(学習しない)
-        "target_model_update_interval": 2000,  # target networkのupdate間隔
+        "target_model_update_interval": 3000,  # target networkのupdate間隔
         "enable_double_dqn": True,
         "enable_rescaling": False,   # rescalingを有効にするか
         "burnin_length": 0,        # burn-in期間
@@ -74,25 +74,25 @@ def create_parameter(env, nb_steps):
 
         "episode_memory": "PERProportionalMemory",
         "episode_memory_kwargs": {
-            "capacity": 1000,
+            "capacity": 2000,
             "alpha": 0.8,
         },
-        "episode_ratio": 1.0/32.0,
+        "episode_ratio": 1.0/16.0,
 
         # intrinsic_reward
         "policy_num": 8,
-        "ucb_epsilon": 0.5,
-        "ucb_window_size": 50,
+        "ucb_epsilon": 0.3,
+        "ucb_window_size": 60,
         "gamma0": 0.999,
         "gamma1": 0.99,
         "gamma2": 0.9,
-        "enable_intrinsic_actval_model": False,
+        "enable_intrinsic_actval_model": True,
         "beta_max": 0.3,
         "uvfa_ext": [
-            #UvfaType.ACTION,
-            #UvfaType.REWARD_EXT,
-            #UvfaType.REWARD_INT,
-            #UvfaType.POLICY,
+            UvfaType.ACTION,
+            UvfaType.REWARD_EXT,
+            UvfaType.REWARD_INT,
+            UvfaType.POLICY,
         ],
         "uvfa_int": [
             UvfaType.ACTION,
@@ -103,7 +103,7 @@ def create_parameter(env, nb_steps):
 
         # other
         "step_interval": 1,
-        "enable_add_episode_end_frame": False,
+        "enable_add_episode_end_frame": True,
     }
 
     return kwargs
@@ -122,11 +122,10 @@ def run_dqn(enable_train):
 
     kwargs = create_parameter(env, nb_steps)
     kwargs["action_policy"] = AnnealingEpsilonGreedy(
-        initial_epsilon=0.5,      # 初期ε
-        final_epsilon=0.01,        # 最終状態でのε
-        exploration_steps=10_000  # 初期→最終状態になるまでのステップ数
+        initial_epsilon=0.5,     # 初期ε
+        final_epsilon=0.01,      # 最終状態でのε
+        exploration_steps=nb_steps  # 初期→最終状態になるまでのステップ数
     )
-    #kwargs["action_policy"] = EpsilonGreedy(0.1)
 
     run_gym_dqn(
         enable_train,
@@ -141,14 +140,15 @@ def run_dqn(enable_train):
         movie_save=False,
     )
     env.close()
-    
-#---------------------------------------------------------
+
+#----------------------
+
 
 class MyActor(ActorUser):
     @staticmethod
     def allocate(actor_index, actor_num):
         return "/device:CPU:0"
-    
+
     def getPolicy(self, actor_index, actor_num):
         return EpsilonGreedy(0.1)
 
@@ -177,11 +177,11 @@ def run_agent57(enable_train):
     print("action_space      : " + str(env.action_space))
     print("observation_space : " + str(env.observation_space))
     print("reward_range      : " + str(env.reward_range))
-    nb_trains = 100_000
+    nb_trains = 20000
 
     kwargs = create_parameter(env, nb_trains)
 
-    kwargs["actors"] = [MyActor1]
+    kwargs["actors"] = [MyActor1, MyActor2]
     kwargs["sync_actor_model_interval"] = 50  # learner から model を同期する間隔
 
     run_gym_agent57(
@@ -199,11 +199,12 @@ def run_agent57(enable_train):
     )
     env.close()
 
+
 #----------------------
 
 
 if __name__ == '__main__':
-    
+
     # エピソードを作成、保存
     if False:
         env = gym.make(ENV_NAME)
@@ -223,4 +224,5 @@ if __name__ == '__main__':
     if False:
         run_agent57(enable_train=True)
         #run_agent57(enable_train=False)  # test only
+
 

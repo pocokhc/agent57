@@ -8,7 +8,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from agent.agent57 import ActorUser
 from agent.policy import EpsilonGreedy, AnnealingEpsilonGreedy
 from agent.memory import PERRankBaseMemory, PERProportionalMemory
-from agent.model import InputType, LstmType, DQNImageModel, R2D3ImageModel
+from agent.model import InputType, LstmType, UvfaType
+from agent.model import DQNImageModel, R2D3ImageModel
 from agent.common import seed_everything
 from agent.callbacks import LoggerType
 
@@ -22,15 +23,17 @@ ENV_NAME = "Pong-v4"
 episode_save_dir = "tmp_{}.".format(ENV_NAME)
 
 
-def create_parameter(env):
+def create_parameter(env, nb_steps):
     
-    processor = AtariPong()
+    processor = AtariPong(end_count=5)
+
     image_model = DQNImageModel()
     #image_model = R2D3ImageModel()
 
     kwargs = {
         "input_shape": processor.image_shape, 
         "input_type": InputType.GRAY_2ch,
+        "input_model": image_model,
         "nb_actions": processor.nb_actions,
         #"nb_actions": env.action_space.n,
 
@@ -39,30 +42,30 @@ def create_parameter(env):
             "capacity": 400_000,
             "alpha": 1.0,          # PERの確率反映率
             "beta_initial": 0.0,   # IS反映率の初期値(1.0が最大)
-            "beta_steps": 100_000,  # IS反映率の上昇step数
+            "beta_steps": nb_steps,  # IS反映率の上昇step数
             "enable_is": True,     # ISを有効にするかどうか
         },
         
-        "image_model": image_model,
         "optimizer_ext": Adam(lr=0.0001, epsilon=0.0001),
         "optimizer_int": Adam(lr=0.0001, epsilon=0.0001),
-        "optimizer_rnd": Adam(lr=0.00001, epsilon=0.0001),
-        "optimizer_emb": Adam(lr=0.0001, epsilon=0.0001),
+        "optimizer_rnd": Adam(lr=0.0005, epsilon=0.0001),
+        "optimizer_emb": Adam(lr=0.0005, epsilon=0.0001),
 
         # NN
-        "batch_size": 32,     # batch_size
+        "batch_size": 16,     # batch_size
         "input_sequence": 4,         # 入力フレーム数
-        "dense_units_num": 64,       # dense層のユニット数
+        "dense_units_num": 256,       # dense層のユニット数
+        "enable_dueling_network": True,
         "lstm_type": LstmType.STATELESS,           # 使用するLSTMアルゴリズム
-        "lstm_units_num": 64,             # LSTMのユニット数
+        "lstm_units_num": 256,             # LSTMのユニット数
         "lstmful_input_length": 2,       # ステートフルLSTMの入力数
+        "burnin_length": 0,        # burn-in期間
 
         # train
-        "memory_warmup_size": 10000,    # 初期のメモリー確保用step数(学習しない)
-        "target_model_update_interval": 4_000,  # target networkのupdate間隔
+        "memory_warmup_size": 6250,    # 初期のメモリー確保用step数(学習しない)
+        "target_model_update_interval": 1500,  # target networkのupdate間隔
+        "enable_double_dqn": True,
         "enable_rescaling": False,   # rescalingを有効にするか
-        "priority_exponent": 0.9,   # priority優先度
-        "burnin_length": 0,        # burn-in期間
         "reward_multisteps": 3,    # multistep reward
 
         "demo_memory": "PERProportionalMemory",
@@ -73,24 +76,40 @@ def create_parameter(env):
         "demo_episode_dir": episode_save_dir,
         "demo_ratio_initial": 1.0,
         "demo_ratio_final": 1.0/512.0,
-        "demo_ratio_steps": 10_000,
+        "demo_ratio_steps": nb_steps,
 
-        "episode_memory": "PERProportionalMemory",
+        #"episode_memory": "PERProportionalMemory",
         "episode_memory_kwargs": {
-            "capacity": 1_000,
+            "capacity": 5_000,
             "alpha": 0.8,
         },
         "episode_ratio": 1.0/128.0,
 
+        # uvfa
+        "uvfa_ext": [
+            UvfaType.ACTION,
+            UvfaType.REWARD_EXT,
+            UvfaType.REWARD_INT,
+            UvfaType.POLICY,
+        ],
+        "uvfa_int": [
+            UvfaType.ACTION,
+            UvfaType.REWARD_EXT,
+            UvfaType.REWARD_INT,
+            UvfaType.POLICY,
+        ],
+
         # intrinsic_reward
-        "enable_intrinsic_reward": True,
-        "policy_num": 4,
-        "beta_max": 0.3,
-        "ucb_epsilon": 0.2,
-        "ucb_window_size": 40,
+        "enable_intrinsic_actval_model": True,
+
+        # intrinsic_reward
+        "policy_num": 8,
+        "ucb_epsilon": 0.5,
+        "ucb_window_size": 60,
 
         "processor": processor,
         "step_interval": 1,
+        "enable_add_episode_end_frame": False,
     }
 
     return kwargs
@@ -106,12 +125,13 @@ def run_dqn(enable_train):
     print("action_space      : " + str(env.action_space))
     print("observation_space : " + str(env.observation_space))
     print("reward_range      : " + str(env.reward_range))
+    nb_steps = 1_750_000
 
-    kwargs = create_parameter(env)
+    kwargs = create_parameter(env, nb_steps)
     kwargs["action_policy"] = AnnealingEpsilonGreedy(
         initial_epsilon=1.0,      # 初期ε
-        final_epsilon=0.05,        # 最終状態でのε
-        exploration_steps=50_000  # 初期→最終状態になるまでのステップ数
+        final_epsilon=0.01,        # 最終状態でのε
+        exploration_steps=100_000  # 初期→最終状態になるまでのステップ数
     )
 
     run_gym_dqn(
@@ -119,15 +139,15 @@ def run_dqn(enable_train):
         env,
         ENV_NAME,
         kwargs,
-        nb_steps=1_750_000,
-        nb_time=60*60*18,
+        nb_steps=nb_steps,
+        nb_time=60*60*18,   # 18h
         logger_type=LoggerType.TIME,
-        log_interval=60*20,
+        log_interval=60*20,  # 20m
         test_env=env,
-        test_episodes=5,
-        #load_weights="Pong-v4_weight.h5_max_159919_-13.2.h5",
+        test_episodes=10,
         movie_save=False,
     )
+    env.close()
     
 #--------------------------------------------
 
@@ -168,8 +188,9 @@ def run_agent57(enable_train):
     print("action_space      : " + str(env.action_space))
     print("observation_space : " + str(env.observation_space))
     print("reward_range      : " + str(env.reward_range))
+    nb_steps = 1_750_000
 
-    kwargs = create_parameter(env)
+    kwargs = create_parameter(env, nb_steps)
 
     kwargs["actors"] = [MyActor1]
     #kwargs["actors"] = [MyActor1, MyActor3]
@@ -182,22 +203,22 @@ def run_agent57(enable_train):
         ENV_NAME,
         kwargs,
         nb_trains=1_750_000,
-        nb_time=60*10*1,
+        nb_time=60*60*18,  # 18h
         logger_type=LoggerType.TIME,
-        log_interval=60*1,
+        log_interval=60*20,  # 20m
         test_env=create_env,
         is_load_weights=False,
         movie_save=False,
     )
+    env.close()
 
 
 if __name__ == '__main__':
     
     # エピソードを作成、保存
-    #if True:
     if False:
         env = gym.make(ENV_NAME)
-        kwargs = create_parameter(env)
+        kwargs = create_parameter(env, 0)
         run_play(env, episode_save_dir, kwargs["processor"], zoom=3)
 
     # エピソードを再生(確認用)
@@ -205,14 +226,12 @@ if __name__ == '__main__':
         run_replay(episode_save_dir)
 
     # SingleActorレーニング
-    #if False:
-    if True:
+    if False:
         run_dqn(enable_train=True)
         #run_dqn(enable_train=False)  # test only
 
     # 複数Actorレーニング
-    if False:
-    #if True:
+    if True:
         run_agent57(enable_train=True)
         #run_agent57(enable_train=False)  # test only
 

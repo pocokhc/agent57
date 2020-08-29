@@ -19,7 +19,7 @@ import ctypes
 import random
 
 from .model import ModelBuilder
-from .model import DuelingNetwork, LstmType
+from .model import DuelingNetwork, LstmType, UvfaType
 from .actor import Actor
 from .learner import Learner
 from .env_play import add_memory
@@ -50,10 +50,10 @@ class Agent57():
         memory_kwargs,
         actors,
 
-        # image_model
-        image_model=None,
-        image_model_emb=None,
-        image_model_rnd=None,
+        # input_model
+        input_model=None,
+        input_model_emb=None,
+        input_model_rnd=None,
 
         # optimizer
         optimizer_ext=None,
@@ -96,7 +96,9 @@ class Agent57():
         episode_verbose=1,
 
         # intrinsic_reward
-        enable_intrinsic_reward=False,
+        uvfa_ext=[],
+        uvfa_int=[],
+        enable_intrinsic_actval_model=False,
         int_episode_reward_k=10,
         int_episode_reward_epsilon=0.001,
         int_episode_reward_c=0.001,
@@ -119,10 +121,15 @@ class Agent57():
         # other
         processor=None,
         step_interval=1,
+        enable_add_episode_end_frame=True,
+        test_policy=0,
 
         # その他
         verbose=1,
     ):
+
+        if not enable_intrinsic_actval_model:
+            uvfa_int = []
 
         self.kwargs = {
             "input_shape": input_shape,
@@ -132,9 +139,9 @@ class Agent57():
             "memory_kwargs": memory_kwargs,
             "actors": actors,
 
-            "image_model": image_model,
-            "image_model_emb": image_model_emb,
-            "image_model_rnd": image_model_rnd,
+            "input_model": input_model,
+            "input_model_emb": input_model_emb,
+            "input_model_rnd": input_model_rnd,
             
             "optimizer_ext": optimizer_ext,
             "optimizer_int": optimizer_int,
@@ -171,7 +178,9 @@ class Agent57():
             "episode_ratio": episode_ratio,
             "episode_verbose": episode_verbose,
             
-            "enable_intrinsic_reward": enable_intrinsic_reward,
+            "uvfa_ext": uvfa_ext,
+            "uvfa_int": uvfa_int,
+            "enable_intrinsic_actval_model": enable_intrinsic_actval_model,
             "int_episode_reward_k": int_episode_reward_k,
             "int_episode_reward_epsilon": int_episode_reward_epsilon,
             "int_episode_reward_c": int_episode_reward_c,
@@ -191,6 +200,8 @@ class Agent57():
 
             "step_interval": step_interval,
             "sync_actor_model_interval": sync_actor_model_interval,
+            "enable_add_episode_end_frame": enable_add_episode_end_frame,
+            "test_policy": test_policy,
 
             "processor": processor,
             "verbose": verbose,
@@ -421,13 +432,18 @@ class LearnerRunner():
         self.kwargs = kwargs
 
         self.sync_actor_model_interval = kwargs["sync_actor_model_interval"]
-        self.enable_intrinsic_reward = kwargs["enable_intrinsic_reward"]
+        self.enable_intrinsic_actval_model = kwargs["enable_intrinsic_actval_model"]
+        if self.enable_intrinsic_actval_model or (UvfaType.REWARD_INT in kwargs["uvfa_ext"]):
+            self.enable_intrinsic_reward = True
+        else:
+            self.enable_intrinsic_reward = False
+
         self.model_builder = ModelBuilder(
             kwargs["input_shape"],
             kwargs["input_type"],
-            kwargs["image_model"],
-            kwargs["image_model_emb"],
-            kwargs["image_model_rnd"],
+            kwargs["input_model"],
+            kwargs["input_model_emb"],
+            kwargs["input_model_rnd"],
             kwargs["batch_size"],
             kwargs["nb_actions"],
             kwargs["input_sequence"],
@@ -445,7 +461,7 @@ class LearnerRunner():
             kwargs["nb_actions"],
             kwargs["target_model_update_interval"],
             kwargs["enable_double_dqn"],
-            kwargs["enable_intrinsic_reward"],
+            kwargs["enable_intrinsic_actval_model"],
             kwargs["lstm_type"],
             kwargs["memory"],
             kwargs["memory_kwargs"],
@@ -474,6 +490,8 @@ class LearnerRunner():
             kwargs["gamma0"],
             kwargs["gamma1"],
             kwargs["gamma2"],
+            kwargs["uvfa_ext"],
+            kwargs["uvfa_int"],
             len(kwargs["actors"]),
         )
 
@@ -490,8 +508,9 @@ class LearnerRunner():
             d = {
                 "ext": self.learner.actval_ext_model.get_weights()
             }
-            if self.enable_intrinsic_reward:
+            if self.enable_intrinsic_actval_model:
                 d["int"] = self.learner.actval_int_model.get_weights()
+            if self.enable_intrinsic_reward:
                 d["rnd_train"]  = self.learner.rnd_train_model.get_weights()
                 d["rnd_target"] = self.learner.rnd_target_model.get_weights()
                 self.model_builder.sync_embedding_model(self.learner.emb_train_model, self.learner.emb_model)
@@ -624,9 +643,9 @@ class ActorRunner(rl.core.Agent):
         self.model_builder = ModelBuilder(
             kwargs["input_shape"],
             kwargs["input_type"],
-            kwargs["image_model"],
-            kwargs["image_model_emb"],
-            kwargs["image_model_rnd"],
+            kwargs["input_model"],
+            kwargs["input_model_emb"],
+            kwargs["input_model_rnd"],
             kwargs["batch_size"],
             kwargs["nb_actions"],
             kwargs["input_sequence"],
@@ -648,7 +667,7 @@ class ActorRunner(rl.core.Agent):
             kwargs["reward_multisteps"],
             kwargs["lstmful_input_length"],
             kwargs["burnin_length"],
-            kwargs["enable_intrinsic_reward"],
+            kwargs["enable_intrinsic_actval_model"],
             kwargs["enable_rescaling"],
             kwargs["priority_exponent"],
             kwargs["int_episode_reward_k"],
@@ -660,6 +679,7 @@ class ActorRunner(rl.core.Agent):
             kwargs["rnd_err_capacity"],
             kwargs["rnd_max_reward"],
             kwargs["policy_num"],
+            kwargs["test_policy"],
             kwargs["beta_max"],
             kwargs["gamma0"],
             kwargs["gamma1"],
@@ -668,12 +688,19 @@ class ActorRunner(rl.core.Agent):
             kwargs["ucb_beta"],
             kwargs["ucb_window_size"],
             self.model_builder,
+            kwargs["uvfa_ext"],
+            kwargs["uvfa_int"],
             actor_index,
         )
         
         # local
-        self.enable_intrinsic_reward = kwargs["enable_intrinsic_reward"]
+        self.enable_intrinsic_actval_model = kwargs["enable_intrinsic_actval_model"]
+        if self.enable_intrinsic_actval_model or (UvfaType.REWARD_INT in kwargs["uvfa_ext"]):
+            self.enable_intrinsic_reward = True
+        else:
+            self.enable_intrinsic_reward = False
         self.step_interval = kwargs["step_interval"]
+        self.enable_add_episode_end_frame = kwargs["enable_add_episode_end_frame"]
 
         # model share
         self.actor.build_model(None)
@@ -703,15 +730,27 @@ class ActorRunner(rl.core.Agent):
         action = self.repeated_action
         if self.recent_terminal or (self.local_step % self.step_interval == 0):
             self.actor.forward_train_before(observation)
-            exp = self.actor.create_exp(True)
-            if exp is not None:
-                # expを送る
-                self.exp_q.put(exp)
-                exp = None
+
+            if self.recent_terminal and self.enable_add_episode_end_frame:
+                # 最終フレーム後に1フレーム追加
+                exp = self.actor.create_exp(True, update_terminal=False)
+                if exp is not None:
+                    self.exp_q.put(exp)
+                    exp = None
+                self.actor.add_episode_end_frame()
+                exp = self.actor.create_exp(True, update_terminal=True)
+                if exp is not None:
+                    self.exp_q.put(exp)
+                    exp = None
+            else:
+                exp = self.actor.create_exp(True)
+                if exp is not None:
+                    self.exp_q.put(exp)
+                    exp = None
+
             action = self.actor.forward_train_after()
             self.repeated_action = action
         
-        self.local_step += 1  # (s,a)->(r,s+1) なのでここのタイミング
         return action
 
 
@@ -722,6 +761,7 @@ class ActorRunner(rl.core.Agent):
             self.actor.backward(self.step_reward, terminal)
             self.step_reward = 0
 
+        self.local_step += 1
         if not self.training:
             return []
 
@@ -729,8 +769,9 @@ class ActorRunner(rl.core.Agent):
         if not self.weights_q.empty():
             d = self.weights_q.get(timeout=1)
             self.actor.actval_ext_model.set_weights(d["ext"])
-            if self.enable_intrinsic_reward:
+            if self.enable_intrinsic_actval_model:
                 self.actor.actval_int_model.set_weights(d["int"])
+            if self.enable_intrinsic_reward:
                 self.actor.rnd_train_model.set_weights(d["rnd_train"])
                 self.actor.rnd_target_model.set_weights(d["rnd_target"])
                 self.actor.emb_model.set_weights(d["emb"])

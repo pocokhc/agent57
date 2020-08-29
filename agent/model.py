@@ -32,13 +32,20 @@ class LstmType(enum.Enum):
     STATELESS = 1
     STATEFUL = 2
 
+class UvfaType(enum.Enum):
+    ACTION = 1
+    REWARD_EXT = 2
+    REWARD_INT = 3
+    POLICY = 4
+
+
 class ModelBuilder():
     def __init__(self,
             input_shape,
             input_type,
-            image_model,
-            image_model_emb,
-            image_model_rnd,
+            input_model,
+            input_model_emb,
+            input_model_rnd,
             batch_size,
             nb_actions,
             input_sequence,
@@ -51,9 +58,9 @@ class ModelBuilder():
         ):
         self.input_shape = input_shape
         self.input_type = input_type
-        self.image_model = image_model
-        self.image_model_emb = image_model_emb
-        self.image_model_rnd = image_model_rnd
+        self.input_model = input_model
+        self.input_model_emb = input_model_emb
+        self.input_model_rnd = input_model_rnd
         self.batch_size = batch_size
         self.nb_actions = nb_actions
         self.input_sequence = input_sequence
@@ -64,13 +71,13 @@ class ModelBuilder():
         self.lstm_units_num = lstm_units_num
         self.policy_num = policy_num
 
-        if self.image_model_emb is None:
-            self.image_model_emb = self.image_model
-        if self.image_model_rnd is None:
-            self.image_model_rnd = self.image_model
+        if self.input_model_emb is None:
+            self.input_model_emb = self.input_model
+        if self.input_model_rnd is None:
+            self.input_model_rnd = self.input_model
 
         if input_type == InputType.GRAY_2ch or input_type == InputType.GRAY_3ch or input_type == InputType.COLOR:
-            assert self.image_model is not None
+            assert self.input_model is not None
 
             # 画像入力の制約
             # LSTMを使う場合: 画像は(w,h,ch)で入力できます。
@@ -105,7 +112,7 @@ class ModelBuilder():
 
         return c, input_
 
-    def _build_image_layer(self, image_model, lstm_type, c1, c2=None):
+    def _build_image_layer(self, input_model, lstm_type, c1, c2=None):
         if self.input_type == InputType.VALUES:
             if lstm_type == LstmType.NONE:
                 c1 = Flatten()(c1)
@@ -117,7 +124,7 @@ class ModelBuilder():
                     c2 = TimeDistributed(Flatten())(c2)
         else:
             if lstm_type == LstmType.NONE:
-                is_lstm = False
+                
                 if self.input_type == InputType.GRAY_2ch:
                     # (input_seq, w, h) ->(w, h, input_seq)
                     c1 = Permute((2, 3, 1))(c1)
@@ -132,7 +139,9 @@ class ModelBuilder():
                         c2 = Reshape((self.input_sequence, ) + self.input_shape + (1,) )(c2)
             else:
                 raise ValueError('lstm_type is undefined: {}'.format(lstm_type))
-            c1, c2 = image_model.create_image_model(c1, is_lstm, c2)
+        if input_model is not None:
+            is_lstm = (lstm_type != LstmType.NONE)
+            c1, c2 = input_model.create_input_model(c1, is_lstm, c2)
 
         if c2 is None:
             return c1
@@ -140,17 +149,27 @@ class ModelBuilder():
             return c1, c2
 
 
-    def build_actval_func_model(self, optimizer, enable_uvfa):
+    def build_actval_func_model(self, optimizer, uvfa):
         c, input_ = self._build_input_layer()
-        c = self._build_image_layer(self.image_model, self.lstm_type, c)
+        c = self._build_image_layer(self.input_model, self.lstm_type, c)
         
-        if enable_uvfa:
+        # uvfa
+        uvfa_input_num = 0
+        if UvfaType.ACTION in uvfa:
+            uvfa_input_num += self.nb_actions
+        if UvfaType.REWARD_EXT in uvfa:
+            uvfa_input_num += 1
+        if UvfaType.REWARD_INT in uvfa:
+            uvfa_input_num += 1
+        if UvfaType.POLICY in uvfa:
+            uvfa_input_num += self.policy_num
+        if len(uvfa) > 0:
             if self.lstm_type == LstmType.NONE:
-                c2 = input2 = Input(shape=(self.policy_num,))
+                c2 = input2 = Input(shape=(uvfa_input_num,))
             elif self.lstm_type == LstmType.STATELESS:
-                c2 = input2 = Input(shape=(self.input_sequence, self.policy_num,))
+                c2 = input2 = Input(shape=(self.input_sequence, uvfa_input_num,))
             else:
-                c2 = input2 = Input(batch_shape=(self.batch_size, self.input_sequence, self.policy_num))
+                c2 = input2 = Input(batch_shape=(self.batch_size, self.input_sequence, uvfa_input_num))
             c = Concatenate()([c, c2])
         
         # lstm layer
@@ -158,6 +177,8 @@ class ModelBuilder():
             c = LSTM(self.lstm_units_num, name="lstm")(c)
         elif self.lstm_type == LstmType.STATEFUL:
             c = LSTM(self.lstm_units_num, stateful=True, name="lstm")(c)
+        else:
+            c = Dense(self.dense_units_num, activation="relu")(c)
 
         # dueling network
         if self.enable_dueling_network:
@@ -183,7 +204,7 @@ class ModelBuilder():
             c = Dense(self.dense_units_num, activation="relu")(c)
             c = Dense(self.nb_actions, activation="linear", name="adv")(c)
         
-        if enable_uvfa:
+        if len(uvfa) > 0:
             model = Model([input_, input2], c)
         else:
             model = Model(input_, c)
@@ -196,7 +217,7 @@ class ModelBuilder():
 
     def build_embedding_model(self):
         c, input_ = self._build_input_layer()
-        c = self._build_image_layer(self.image_model_emb, LstmType.NONE, c)
+        c = self._build_image_layer(self.input_model_emb, LstmType.NONE, c)
 
         c = Dense(32, activation="relu", name="emb_dense")(c)
 
@@ -209,7 +230,7 @@ class ModelBuilder():
         c1, input1 = self._build_input_layer()
         c2, input2 = self._build_input_layer()
 
-        c1, c2 = self._build_image_layer(self.image_model_emb, LstmType.NONE, c1, c2)
+        c1, c2 = self._build_image_layer(self.input_model_emb, LstmType.NONE, c1, c2)
 
         d = Dense(32, activation="relu", name="emb_dense")
         c1 = d(c1)
@@ -225,8 +246,8 @@ class ModelBuilder():
         return model
 
     def sync_embedding_model(self, train_model, target_model):
-        if self.image_model_emb is not None:
-            for name in self.image_model_emb.get_layer_names():
+        if self.input_model_emb is not None:
+            for name in self.input_model_emb.get_layer_names():
                 train_layer = train_model.get_layer(name)
                 target_layer = target_model.get_layer(name)
                 target_layer.set_weights(train_layer.get_weights())
@@ -237,7 +258,7 @@ class ModelBuilder():
 
     def build_rnd_model(self, optimizer):
         c, input_ = self._build_input_layer()
-        c = self._build_image_layer(self.image_model_rnd, LstmType.NONE, c)
+        c = self._build_image_layer(self.input_model_rnd, LstmType.NONE, c)
 
         c = Dense(128)(c)
 
@@ -248,16 +269,16 @@ class ModelBuilder():
         return model
 
 
-class ImageModel():
-    """ Abstract base class for all implemented ImageModel. """
+class InputModel():
+    """ Abstract base class for all implemented InputModel. """
     def get_layer_names(self):
         raise NotImplementedError()
 
-    def create_image_model(self, c1, is_lstm, c2=None):
+    def create_input_model(self, c1, is_lstm, c2=None):
         raise NotImplementedError()
     
 
-class DQNImageModel(ImageModel):
+class DQNImageModel(InputModel):
     """ native dqn image model
     https://arxiv.org/abs/1312.5602
     """
@@ -269,7 +290,7 @@ class DQNImageModel(ImageModel):
             "c3",
         ]
 
-    def create_image_model(self, c1, is_lstm, c2=None):
+    def create_input_model(self, c1, is_lstm, c2=None):
         
         if not is_lstm:
             l = Conv2D(32, (8, 8), strides=(4, 4), padding="same", activation="relu", name="c1")
@@ -314,7 +335,7 @@ class DQNImageModel(ImageModel):
         return c1, c2
 
 
-class R2D3ImageModel(ImageModel):
+class R2D3ImageModel(InputModel):
     """ R2D3 image model
     https://arxiv.org/abs/1909.01387
     """
@@ -325,7 +346,7 @@ class R2D3ImageModel(ImageModel):
     def get_layer_names(self):
         return self.names
 
-    def create_image_model(self, c1, is_lstm, c2=None):
+    def create_input_model(self, c1, is_lstm, c2=None):
         self.names = []
 
         c1, c2 = self._resblock(c1, 16, is_lstm, c2)
@@ -424,4 +445,29 @@ class R2D3ImageModel(ImageModel):
         return c1, c2
 
 
+
+class ValueModel(InputModel):
+    def __init__(self, dense_units, layer_num=3):
+        self.dense_units = dense_units
+        self.layer_num = layer_num
+
+    def get_layer_names(self):
+        return [ "l{}".format(i) for i in range(self.layer_num)]
+
+    def create_input_model(self, c1, is_lstm, c2=None):
+        
+        if not is_lstm:
+            for i in range(self.layer_num):
+                l = Dense(self.dense_units, activation="relu", name="l{}".format(i))
+                c1 = l(c1)
+                if c2 is not None:
+                    c2 = l(c2)
+        else:
+            for i in range(self.layer_num):
+                l = TimeDistributed(Dense(self.dense_units, activation="relu", name="l{}".format(i)))
+                c1 = l(c1)
+                if c2 is not None:
+                    c2 = l(c2)
+        
+        return c1, c2
 

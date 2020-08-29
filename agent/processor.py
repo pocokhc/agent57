@@ -125,6 +125,41 @@ class CartPoleProcessor(rl.core.Processor):
             (ord('d'),):1,
         }
 
+
+
+class MountainCarProcessor(rl.core.Processor):
+    def __init__(self, enable_reward_step=False):
+        self.enable_reward_step = enable_reward_step
+        self.step = 0
+        
+    def process_step(self, observation, reward, done, info):
+        observation = self.process_observation(observation)
+        reward = self.process_reward(reward)
+        info = self.process_info(info)
+        
+        if not self.enable_reward_step:
+            return observation, reward, done, info
+        
+        self.step += 1
+         
+        if done :
+            if self.step > 195:
+                reward = 1
+            else:
+                reward = -1
+            self.step = 0
+        else:
+            reward = 0
+
+        return observation, reward, done, info
+
+    def get_keys_to_action(self):
+        return {
+            (ord('a'),):0,
+            (ord('d'),):1,
+        }
+
+
 class AcrobotProcessor(rl.core.Processor):
     def __init__(self, enable_reward_step=False):
         self.enable_reward_step = enable_reward_step
@@ -252,9 +287,11 @@ class AtariBreakout(AtariProcessor):
 
 
 class AtariPong(AtariProcessor):
-    def __init__(self, **kwargs):
+    def __init__(self, end_count=20, **kwargs):
         super().__init__(**kwargs)
         self.nb_actions = 3
+        self.end_count = end_count
+        self.total_count = 0
 
 
     def process_action(self, action):
@@ -264,7 +301,11 @@ class AtariPong(AtariProcessor):
     def process_step(self, observation, reward, done, info):
         observation, reward, done, info = super().process_step(observation, reward, done, info)
         if reward != 0:
+            self.total_count += 1
+        if self.total_count == self.end_count:
             done = True
+        if done:
+            self.total_count = 0
         return observation, reward, done, info
 
     def get_keys_to_action(self):
@@ -273,4 +314,5 @@ class AtariPong(AtariProcessor):
             (ord('a'),):1,
             (ord('d'),):2,
         }
+
 

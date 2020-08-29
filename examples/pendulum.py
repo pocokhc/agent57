@@ -8,7 +8,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from agent.agent57 import ActorUser
 from agent.policy import EpsilonGreedy, AnnealingEpsilonGreedy
 from agent.memory import PERRankBaseMemory, PERProportionalMemory
-from agent.model import InputType, LstmType, DQNImageModel
+from agent.model import InputType, LstmType, UvfaType
+from agent.model import ValueModel, DQNImageModel
 from agent.common import seed_everything
 from agent.callbacks import LoggerType
 
@@ -22,38 +23,36 @@ ENV_NAME = "Pendulum-v0"
 episode_save_dir = "tmp_{}.".format(ENV_NAME)
 
 
-def create_parameter(env):
+def create_parameter(env, nb_steps):
     
     image = False
     if image:
         processor = PendulumProcessorForDQN(enable_image=True)
         input_shape = processor.image_shape
         input_type = InputType.GRAY_2ch
-        image_model = DQNImageModel()
-        enable_rescaling = False
+        input_model = DQNImageModel()
     else:
         processor = PendulumProcessorForDQN()
         input_shape = env.observation_space.shape
         input_type = InputType.VALUES
-        image_model = None
-        enable_rescaling = False
+        input_model = ValueModel(32, 1)
 
-    not_lstmful = True
-    if not_lstmful:
-        lstm_type = LstmType.STATELESS
-        input_sequence = 4
-        lstmful_input_length = 0
-        burnin_length = 0
-    else:
+    lstmful = False
+    if lstmful:
         lstm_type = LstmType.STATEFUL
         input_sequence = 1
         lstmful_input_length = 4
         burnin_length = 2
-
+    else:
+        lstm_type = LstmType.STATELESS
+        input_sequence = 4
+        lstmful_input_length = 0
+        burnin_length = 0
 
     kwargs = {
         "input_shape": input_shape, 
         "input_type": input_type,
+        "input_model": input_model,
         "nb_actions": processor.nb_actions,
 
         "memory": "PERRankBaseMemory",
@@ -61,29 +60,29 @@ def create_parameter(env):
             "capacity": 60_000,
             "alpha": 1.0,          # PERの確率反映率
             "beta_initial": 0.0,   # IS反映率の初期値(1.0が最大)
-            "beta_steps": 50_000,  # IS反映率の上昇step数
+            "beta_steps": nb_steps,  # IS反映率の上昇step数
             "enable_is": True,     # ISを有効にするかどうか
         },
 
-        "image_model": image_model,
-        "optimizer_ext": Adam(lr=0.001),
-        "optimizer_int": Adam(lr=0.001),
-        "optimizer_rnd": Adam(lr=0.00005, epsilon=0.0001),
-        "optimizer_emb": Adam(lr=0.001, epsilon=0.001),
+        "optimizer_ext": Adam(lr=0.0005),
+        "optimizer_int": Adam(lr=0.0005),
+        "optimizer_rnd": Adam(lr=0.001),
+        "optimizer_emb": Adam(lr=0.001),
 
         # NN
         "batch_size": 16,     # batch_size
         "input_sequence": input_sequence,         # 入力フレーム数
         "dense_units_num": 32,       # dense層のユニット数
+        "enable_dueling_network": True,
         "lstm_type": lstm_type,           # 使用するLSTMアルゴリズム
         "lstm_units_num": 32,             # LSTMのユニット数
         "lstmful_input_length": lstmful_input_length,       # ステートフルLSTMの入力数
 
         # train
-        "memory_warmup_size": 600,    # 初期のメモリー確保用step数(学習しない)
+        "memory_warmup_size": 1000,    # 初期のメモリー確保用step数(学習しない)
         "target_model_update_interval": 1000,  # target networkのupdate間隔
-        "enable_rescaling": enable_rescaling,   # rescalingを有効にするか
-        "priority_exponent": 0.9,   # priority優先度
+        "enable_double_dqn": True,
+        "enable_rescaling": False,   # rescalingを有効にするか
         "burnin_length": burnin_length,        # burn-in期間
         "reward_multisteps": 3,    # multistep reward
 
@@ -95,7 +94,7 @@ def create_parameter(env):
         "demo_episode_dir": episode_save_dir,
         "demo_ratio_initial": 1.0,
         "demo_ratio_final": 1.0/512.0,
-        "demo_ratio_steps": 10_000,
+        "demo_ratio_steps": nb_steps,
 
         "episode_memory": "PERProportionalMemory",
         "episode_memory_kwargs": {
@@ -105,14 +104,31 @@ def create_parameter(env):
         "episode_ratio": 1.0/16.0,
 
         # intrinsic_reward
-        "enable_intrinsic_reward": True,
-        "policy_num": 4,
+        "policy_num": 8,
+        "ucb_epsilon": 0.3,
+        "ucb_window_size": 60,
+        "gamma0": 0.999,
+        "gamma1": 0.99,
+        "gamma2": 0.9,
+        "enable_intrinsic_actval_model": True,
         "beta_max": 0.3,
-        "ucb_epsilon": 0.1,
-        "ucb_window_size": 20,
+        "uvfa_ext": [
+            UvfaType.ACTION,
+            UvfaType.REWARD_EXT,
+            UvfaType.REWARD_INT,
+            UvfaType.POLICY,
+        ],
+        "uvfa_int": [
+            UvfaType.ACTION,
+            UvfaType.REWARD_EXT,
+            UvfaType.REWARD_INT,
+            UvfaType.POLICY,
+        ],
 
+        # other
         "processor": processor,
         "step_interval": 1,
+        "enable_add_episode_end_frame": True,
     }
 
     return kwargs
@@ -127,8 +143,9 @@ def run_dqn(enable_train):
     print("action_space      : " + str(env.action_space))
     print("observation_space : " + str(env.observation_space))
     print("reward_range      : " + str(env.reward_range))
+    nb_steps = 20000
 
-    kwargs = create_parameter(env)
+    kwargs = create_parameter(env, nb_steps)
     kwargs["action_policy"] = AnnealingEpsilonGreedy(
         initial_epsilon=0.5,     # 初期ε
         final_epsilon=0.01,      # 最終状態でのε
@@ -140,13 +157,14 @@ def run_dqn(enable_train):
         env,
         ENV_NAME,
         kwargs,
-        nb_steps=10_000,
+        nb_steps=nb_steps,
         nb_time=60*60,
         logger_type=LoggerType.STEP,
         log_interval=1000,
         test_env=env,
         movie_save=False,
     )
+    env.close()
 
 #----------------------
 
@@ -183,8 +201,9 @@ def run_agent57(enable_train):
     print("action_space      : " + str(env.action_space))
     print("observation_space : " + str(env.observation_space))
     print("reward_range      : " + str(env.reward_range))
+    nb_trains = 20000
 
-    kwargs = create_parameter(env)
+    kwargs = create_parameter(env, nb_trains)
 
     kwargs["actors"] = [MyActor1, MyActor2]
     kwargs["sync_actor_model_interval"] = 50  # learner から model を同期する間隔
@@ -194,7 +213,7 @@ def run_agent57(enable_train):
         env,
         ENV_NAME,
         kwargs,
-        nb_trains=10000,
+        nb_trains=nb_trains,
         nb_time=60*60,
         logger_type=LoggerType.STEP,
         log_interval=1000,
@@ -202,6 +221,7 @@ def run_agent57(enable_train):
         is_load_weights=False,
         movie_save=False,
     )
+    env.close()
 
 
 #----------------------
@@ -212,7 +232,7 @@ if __name__ == '__main__':
     # エピソードを作成、保存
     if False:
         env = gym.make(ENV_NAME)
-        kwargs = create_parameter(env)
+        kwargs = create_parameter(env, 0)
         run_play(env, episode_save_dir, kwargs["processor"])
 
     # エピソードを再生(確認用)
@@ -220,12 +240,12 @@ if __name__ == '__main__':
         run_replay(episode_save_dir)
 
     # SingleActorレーニング
-    if True:
+    if False:
         run_dqn(enable_train=True)
         #run_dqn(enable_train=False)  # test only
 
     # 複数Actorレーニング
-    if False:
+    if True:
         run_agent57(enable_train=True)
         #run_agent57(enable_train=False)  # test only
 

@@ -8,7 +8,7 @@ import random
 import os
 import pickle
 
-from .model import LstmType
+from .model import LstmType, UvfaType
 from .common import create_beta_list, create_gamma_list_agent57
 from .memory import EpisodeMemory, MemoryFactory
 
@@ -18,7 +18,7 @@ class Learner():
             nb_actions,
             target_model_update_interval,
             enable_double_dqn,
-            enable_intrinsic_reward,
+            enable_intrinsic_actval_model,
             lstm_type,
             memory,
             memory_kwargs,
@@ -47,6 +47,8 @@ class Learner():
             gamma0,
             gamma1,
             gamma2,
+            uvfa_ext,
+            uvfa_int,
             actor_num,
         ):
         
@@ -56,11 +58,18 @@ class Learner():
         self.lstmful_input_length = lstmful_input_length
         self.priority_exponent = priority_exponent
         self.input_sequence = input_sequence
-
         self.nb_actions = nb_actions
         self.model_builder = model_builder
         self.policy_num = policy_num
         self.actor_num = actor_num
+        self.uvfa_ext = uvfa_ext
+        self.uvfa_int = uvfa_int
+
+        self.enable_intrinsic_actval_model = enable_intrinsic_actval_model
+        if self.enable_intrinsic_actval_model or (UvfaType.REWARD_INT in self.uvfa_ext):
+            self.enable_intrinsic_reward = True
+        else:
+            self.enable_intrinsic_reward = False
 
         # optimizer
         if optimizer_ext is None:
@@ -73,21 +82,24 @@ class Learner():
             optimizer_emb = Adam(lr=0.0005, epsilon=0.0001)
 
         # model create
-        self.actval_ext_model = model_builder.build_actval_func_model(optimizer_ext, enable_uvfa=False)
+        self.actval_ext_model = model_builder.build_actval_func_model(optimizer_ext, uvfa_ext)
         self.actval_ext_model_target = model_from_json(self.actval_ext_model.to_json())
-        self.actval_int_model = model_builder.build_actval_func_model(optimizer_int, enable_uvfa=True)
-        self.actval_int_model_target = model_from_json(self.actval_int_model.to_json())
-        self.rnd_target_model = model_builder.build_rnd_model(None)
-        self.rnd_train_model = model_builder.build_rnd_model(optimizer_rnd)
-        self.emb_model = model_builder.build_embedding_model()
-        self.emb_train_model = model_builder.build_embedding_model_train(optimizer_emb)
-        self.model_builder.sync_embedding_model(self.emb_train_model, self.emb_model)
+        if self.enable_intrinsic_actval_model:
+            self.actval_int_model = model_builder.build_actval_func_model(optimizer_int, uvfa_int)
+            self.actval_int_model_target = model_from_json(self.actval_int_model.to_json())
+        if self.enable_intrinsic_reward:
+            self.rnd_target_model = model_builder.build_rnd_model(None)
+            self.rnd_train_model = model_builder.build_rnd_model(optimizer_rnd)
+            self.emb_model = model_builder.build_embedding_model()
+            self.emb_train_model = model_builder.build_embedding_model_train(optimizer_emb)
+            self.model_builder.sync_embedding_model(self.emb_train_model, self.emb_model)
 
         if lstm_type == LstmType.STATEFUL:
             self.lstm = self.actval_ext_model.get_layer("lstm")
             self.target_lstm = self.actval_ext_model_target.get_layer("lstm")
-            self.lstm_int = self.actval_int_model.get_layer("lstm")
-            self.target_lstm_int = self.actval_int_model_target.get_layer("lstm")
+            if self.enable_intrinsic_actval_model:
+                self.lstm_int = self.actval_int_model.get_layer("lstm")
+                self.target_lstm_int = self.actval_int_model_target.get_layer("lstm")
 
 
         self.memory = MemoryFactory.create(memory, memory_kwargs)
@@ -98,7 +110,6 @@ class Learner():
         self.batch_size = batch_size
         self.lstm_type = lstm_type
         self.target_model_update_interval = target_model_update_interval
-        self.enable_intrinsic_reward = enable_intrinsic_reward
         self.enable_double_dqn = enable_double_dqn
 
         # demo replay
@@ -127,12 +138,9 @@ class Learner():
             self.episode_memory_exp_list = [ [] for _ in range(self.actor_num)]
             self.total_reward_list = [ 0 for _ in range(self.actor_num)]
 
-        # intrinsic_reward
-        if self.enable_intrinsic_reward:
-            self.int_beta_list = create_beta_list(policy_num, beta_max)
-            self.gamma_list = create_gamma_list_agent57(policy_num, gamma0, gamma1, gamma2)
-        else:
-            self.gamma_list = [gamma2]
+        # ucb
+        self.int_beta_list = create_beta_list(policy_num, beta_max)
+        self.gamma_list = create_gamma_list_agent57(policy_num, gamma0, gamma1, gamma2)
 
         # local
         self.train_count = 0
@@ -145,8 +153,9 @@ class Learner():
             "weights_ext": self.actval_ext_model.get_weights(),
             "step": self.train_count,
         }
-        if self.enable_intrinsic_reward:
+        if self.enable_intrinsic_actval_model:
             d["weights_int"] = self.actval_int_model.get_weights()
+        if self.enable_intrinsic_reward:
             d["weights_rnd_train"] = self.rnd_train_model.get_weights()
             d["weights_rnd_target"] = self.rnd_target_model.get_weights()
             self.model_builder.sync_embedding_model(self.emb_train_model, self.emb_model)
@@ -173,9 +182,10 @@ class Learner():
         self.actval_ext_model.set_weights(d["weights_ext"])
         self.actval_ext_model_target.set_weights(d["weights_ext"])
         self.train_count = d["step"]
-        if self.enable_intrinsic_reward:
+        if self.enable_intrinsic_actval_model:
             self.actval_int_model.set_weights(d["weights_int"])
             self.actval_int_model_target.set_weights(d["weights_int"])
+        if self.enable_intrinsic_reward:
             self.rnd_train_model.set_weights(d["weights_rnd_train"])
             self.rnd_target_model.set_weights(d["weights_rnd_target"])
             self.emb_model.set_weights(d["weights_emb"])
@@ -261,7 +271,7 @@ class Learner():
         # target networkの更新
         if self.train_count % self.target_model_update_interval == 0:
             self.actval_ext_model_target.set_weights(self.actval_ext_model.get_weights())
-            if self.enable_intrinsic_reward:
+            if self.enable_intrinsic_actval_model:
                 self.actval_int_model_target.set_weights(self.actval_int_model.get_weights())
 
     # ノーマルの学習
@@ -269,67 +279,134 @@ class Learner():
 
         state0_batch = []
         state1_batch = []
-        if self.enable_intrinsic_reward:
+        state0_batch_ext = []
+        state1_batch_ext = []
+        if self.enable_intrinsic_actval_model:
             state0_batch_int = []
             state1_batch_int = []
+        if self.enable_intrinsic_reward:
             emb_act_batch = []
         for i, batch in enumerate(batchs):
             state0_batch.append(batch[0][-self.input_sequence-self.reward_multisteps:-self.reward_multisteps])
             state1_batch.append(batch[0][-self.input_sequence:])
-            if self.enable_intrinsic_reward:
-                # (policy_num)
-                t = to_categorical(batch[7], num_classes=self.policy_num)
+
+            if (UvfaType.ACTION in self.uvfa_ext) or (UvfaType.ACTION in self.uvfa_int):
+                act0 = to_categorical(batch[1][0], num_classes=self.nb_actions)
+            if (UvfaType.ACTION in self.uvfa_ext) or (UvfaType.ACTION in self.uvfa_int) or self.enable_intrinsic_reward:
+                act1 = to_categorical(batch[1][1], num_classes=self.nb_actions)
+            if (UvfaType.POLICY in self.uvfa_ext) or (UvfaType.POLICY in self.uvfa_int):
+                policy = to_categorical(batch[7], num_classes=self.policy_num)
+
+            # uvfa ext
+            if len(self.uvfa_ext) > 0:
+                ext0 = np.empty(0)
+                ext1 = np.empty(0)
+                if UvfaType.ACTION in self.uvfa_ext:
+                    ext0 = np.append(ext0, act0)
+                    ext1 = np.append(ext1, act1)
+                if UvfaType.REWARD_EXT in self.uvfa_ext:
+                    ext0 = np.append(ext0, batch[2][0])
+                    ext1 = np.append(ext1, batch[2][1])
+                if UvfaType.REWARD_INT in self.uvfa_ext:
+                    ext0 = np.append(ext0, batch[6][0])
+                    ext1 = np.append(ext1, batch[6][1])
+                if UvfaType.POLICY in self.uvfa_ext:
+                    ext0 = np.append(ext0, policy)
+                    ext1 = np.append(ext1, policy)
+                
                 if self.lstm_type != LstmType.NONE:
-                    # (input_sequence, policy_num)
-                    t = np.full((self.input_sequence, self.policy_num), t)
-                state0_batch_int.append(t)
-                state1_batch_int.append(t)
-                emb_act_batch.append(to_categorical(batch[1], num_classes=self.nb_actions))
-        state0_batch = np.asarray(state0_batch)
-        state1_batch = np.asarray(state1_batch)
+                    # (input_sequence, uvfa_input)
+                    ext0 = np.full((self.input_sequence,) + ext0.shape, ext0)
+                    ext1 = np.full((self.input_sequence,) + ext1.shape, ext1)
+                
+                state0_batch_ext.append(ext0)
+                state1_batch_ext.append(ext1)
+
+            # uvfa int
+            if self.enable_intrinsic_actval_model and len(self.uvfa_int) > 0:
+                int0 = np.empty(0)
+                int1 = np.empty(0)
+                if UvfaType.ACTION in self.uvfa_int:
+                    int0 = np.append(int0, act0)
+                    int1 = np.append(int1, act1)
+                if UvfaType.REWARD_EXT in self.uvfa_int:
+                    int0 = np.append(int0, batch[2][0])
+                    int1 = np.append(int1, batch[2][1])
+                if UvfaType.REWARD_INT in self.uvfa_int:
+                    int0 = np.append(int0, batch[6][0])
+                    int1 = np.append(int1, batch[6][1])
+                if UvfaType.POLICY in self.uvfa_int:
+                    int0 = np.append(int0, policy)
+                    int1 = np.append(int1, policy)
+
+                if self.lstm_type != LstmType.NONE:
+                    # (input_sequence, uvfa_input)
+                    int0 = np.full((self.input_sequence,) + int0.shape, int0)
+                    int1 = np.full((self.input_sequence,) + int1.shape, int1)
+                
+                state0_batch_int.append(int0)
+                state1_batch_int.append(int1)
+
+            if self.enable_intrinsic_reward:
+                emb_act_batch.append(act1)
+
+        if len(self.uvfa_ext) == 0:
+            state0_batch_ext = np.asarray(state0_batch)
+            state1_batch_ext = np.asarray(state1_batch)
+        else:
+            state0_batch_ext = [np.asarray(state0_batch), np.asarray(state0_batch_ext)]
+            state1_batch_ext = [np.asarray(state1_batch), np.asarray(state1_batch_ext)]
 
         # 更新用に現在のQネットワークを出力(Q network)
-        state0_qvals = self.actval_ext_model.predict(state0_batch, self.batch_size)
+        state0_qvals = self.actval_ext_model.predict(state0_batch_ext, self.batch_size)
+
+        if self.enable_intrinsic_actval_model:
+            if len(self.uvfa_int) == 0:
+                state0_batch_int = np.asarray(state0_batch)
+                state1_batch_int = np.asarray(state1_batch)
+            else:
+                state0_batch_int = [np.asarray(state0_batch), np.asarray(state0_batch_int)]
+                state1_batch_int = [np.asarray(state1_batch), np.asarray(state1_batch_int)]
+                
+            # qvals
+            state0_qvals_int = self.actval_int_model.predict(state0_batch_int, self.batch_size)
+        
 
         if self.enable_intrinsic_reward:
-            emb_act_batch = np.asarray(emb_act_batch)
-            state0_batch_int = [state0_batch, np.asarray(state0_batch_int)]
-            state1_batch_int = [state1_batch, np.asarray(state1_batch_int)]
-
             # emb network
+            emb_act_batch = np.asarray(emb_act_batch)
             self.emb_train_model.train_on_batch([state0_batch, state1_batch], emb_act_batch)
 
             # rnd network
+            state1_batch = np.asarray(state1_batch)
             rnd_target_val = self.rnd_target_model.predict(state1_batch, self.batch_size)
             self.rnd_train_model.train_on_batch(state1_batch, rnd_target_val)
 
-            # qvals
-            state0_qvals_int = self.actval_int_model.predict(state0_batch_int, self.batch_size)
 
         if self.enable_double_dqn:
             # TargetNetworkとQNetworkのQ値を出す
-            state1_qvals_model = self.actval_ext_model.predict(state1_batch, self.batch_size)
-            state1_qvals_target = self.actval_ext_model_target.predict(state1_batch, self.batch_size)
-            if self.enable_intrinsic_reward:
+            state1_qvals_model = self.actval_ext_model.predict(state1_batch_ext, self.batch_size)
+            state1_qvals_target = self.actval_ext_model_target.predict(state1_batch_ext, self.batch_size)
+            if self.enable_intrinsic_actval_model:
                 #state1_qvals_model_int = self.actval_int_model.predict(state1_batch_int, self.batch_size)
                 state1_qvals_target_int = self.actval_int_model_target.predict(state1_batch_int, self.batch_size)
         else:
             # 次の状態のQ値を取得(target_network)
-            state1_qvals_target = self.actval_ext_model_target.predict(state1_batch, self.batch_size)
-            if self.enable_intrinsic_reward:
+            state1_qvals_target = self.actval_ext_model_target.predict(state1_batch_ext, self.batch_size)
+            if self.enable_intrinsic_actval_model:
                 state1_qvals_target_int = self.actval_int_model_target.predict(state1_batch_int, self.batch_size)
 
         for i in range(self.batch_size):
             if self.enable_double_dqn:
-                max_action = state1_qvals_model[i].argmax()  # modelからアクションを出す
-                maxq = state1_qvals_target[i][max_action]    # Q値はtarget_modelを使って出す
+                max_action = state1_qvals_model[i].argmax()
             else:
-                maxq = state1_qvals_target[i].max()
+                max_action = state1_qvals_target[i].argmax()
+            maxq = state1_qvals_target[i][max_action]
 
             policy_index = batchs[i][7]
             gamma = self.gamma_list[policy_index]
-            action = batchs[i][1]
-            reward = batchs[i][2]
+            action = batchs[i][1][1]
+            reward = batchs[i][2][1]
             q0 = state0_qvals[i][action]
 
             # Calc
@@ -337,14 +414,15 @@ class Learner():
             priority = abs(td_error)
             state0_qvals[i][action] += td_error * weights[i]
 
-            if self.enable_intrinsic_reward:
-                if self.enable_double_dqn:
-                    #max_action = state1_qvals_model_int[i].argmax()  # modelからアクションを出す
-                    maxq = state1_qvals_target_int[i][max_action]    # Q値はtarget_modelを使って出す
-                else:
-                    maxq = state1_qvals_target_int[i].max()
+            if self.enable_intrinsic_actval_model:
+                # 多分内部報酬のQ値参照は外部報酬と合わせた方がいい
+                #if self.enable_double_dqn:
+                #    max_action = state1_qvals_model_int[i].argmax()  # modelからアクションを出す
+                #else:
+                #    max_action = state1_qvals_target_int[i].argmax()
+                maxq = state1_qvals_target_int[i][max_action]
                 
-                reward = batchs[i][6]
+                reward = batchs[i][6][1]
                 q0 = state0_qvals_int[i][action]
 
                 # Calc
@@ -362,35 +440,35 @@ class Learner():
                 assert False
 
         # 学習
-        self.actval_ext_model.train_on_batch(state0_batch, state0_qvals)
-        if self.enable_intrinsic_reward:
+        self.actval_ext_model.train_on_batch(state0_batch_ext, state0_qvals)
+        if self.enable_intrinsic_actval_model:
             self.actval_int_model.train_on_batch(state0_batch_int, state0_qvals_int)
 
 
     # ステートフルLSTMの学習
     def train_model_lstmful(self, indexes, batchs, weights, memory_types):
 
-        hidden_s0 = []
-        hidden_s1 = []
+        #--- ext
+        hidden_s0_ext = []
+        hidden_s1_ext = []
         for batch in batchs:
             # batchサイズ分あるけどすべて同じなので0番目を取得
-            hidden_s0.append(batch[9][0][0])
-            hidden_s1.append(batch[9][1][0])
-        hidden_states = [np.asarray(hidden_s0), np.asarray(hidden_s1)]
+            hidden_s0_ext.append(batch[9][0][0])
+            hidden_s1_ext.append(batch[9][1][0])
+        hidden_states_ext = [np.asarray(hidden_s0_ext), np.asarray(hidden_s1_ext)]
 
-        # init hidden_state
-        self.lstm.reset_states(hidden_states)
-        self.target_lstm.reset_states(hidden_states)
-
-        hidden_states_arr = []
-        if self.burnin_length == 0:
-            hidden_states_arr.append(hidden_states)
+        self.lstm.reset_states(hidden_states_ext)
+        self.target_lstm.reset_states(hidden_states_ext)
+        
         state_batch_arr = []
-        qvals_arr = []
-        target_qvals_arr = []
+        hidden_states_arr_ext = []
+        state_batch_arr_ext = []
+        qvals_arr_ext = []
+        target_qvals_arr_ext = []
         prioritys = [ [] for _ in range(self.batch_size)]
 
-        if self.enable_intrinsic_reward:
+        #--- int
+        if self.enable_intrinsic_actval_model:
             hidden_s0_int = []
             hidden_s1_int = []
             for batch in batchs:
@@ -402,74 +480,118 @@ class Learner():
             self.target_lstm_int.reset_states(hidden_states_int)
 
             hidden_states_arr_int = []
-            if self.burnin_length == 0:
-                hidden_states_arr_int.append(hidden_states_int)
             state_batch_arr_int = []
             qvals_arr_int = []
             target_qvals_arr_int = []
 
-        # predict
+
+        #--- まずは qval を全部計算する + burn-in
         for seq_i in range(self.burnin_length + self.reward_multisteps + self.lstmful_input_length):
 
-            # state
-            state_batch = [ batch[0][seq_i] for batch in batchs ]
-            state_batch = np.asarray(state_batch)
-            
-            # hidden_state更新およびQ値取得
-            qvals = self.actval_ext_model.predict(state_batch, self.batch_size)
-            qvals_t = self.actval_ext_model_target.predict(state_batch, self.batch_size)
+            # hidden states
+            if seq_i >= self.burnin_length:
+                hidden_states_arr_ext.append([K.get_value(self.lstm.states[0]), K.get_value(self.lstm.states[1])])
+                if self.enable_intrinsic_actval_model:
+                    hidden_states_arr_int.append([K.get_value(self.lstm_int.states[0]), K.get_value(self.lstm_int.states[1])])
 
-            if self.enable_intrinsic_reward:
-                # (batch_size, input_sequence, policy_num)
-                t = [ np.full((self.input_sequence, self.policy_num), 
-                        to_categorical(batch[7], num_classes=self.policy_num)) for batch in batchs ]
-                state_batch_int = [state_batch, np.asarray(t)]
+            # state
+            state_batch = []
+            state_batch_ext = []
+            state_batch_int = []
+            for batch in batchs:
+                state_batch.append(batch[0][seq_i])
+
+                if (UvfaType.ACTION in self.uvfa_ext) or (UvfaType.ACTION in self.uvfa_int) or self.enable_intrinsic_reward:
+                    act = to_categorical(batch[1][seq_i], num_classes=self.nb_actions)
+                if (UvfaType.POLICY in self.uvfa_ext) or (UvfaType.POLICY in self.uvfa_int):
+                    policy = to_categorical(batch[7], num_classes=self.policy_num)
+
+                # uvfa ext
+                if len(self.uvfa_ext) > 0:
+                    ext = np.empty(0)
+                    if UvfaType.ACTION in self.uvfa_ext:
+                        ext = np.append(ext, act)
+                    if UvfaType.REWARD_EXT in self.uvfa_ext:
+                        ext = np.append(ext, batch[2][seq_i])
+                    if UvfaType.REWARD_INT in self.uvfa_ext:
+                        ext = np.append(ext, batch[6][seq_i])
+                    if UvfaType.POLICY in self.uvfa_ext:
+                        ext = np.append(ext, policy)
+
+                    ext = np.full((self.input_sequence,) + ext.shape, ext)
+                    state_batch_ext.append(ext)
+
+                # uvfa int
+                if self.enable_intrinsic_actval_model and len(self.uvfa_int) > 0:
+                    int_ = np.empty(0)
+                    if UvfaType.ACTION in self.uvfa_int:
+                        int_ = np.append(int_, act)
+                    if UvfaType.REWARD_EXT in self.uvfa_int:
+                        int_ = np.append(int_, batch[2][seq_i])
+                    if UvfaType.REWARD_INT in self.uvfa_int:
+                        int_ = np.append(int_, batch[6][seq_i])
+                    if UvfaType.POLICY in self.uvfa_int:
+                        int_ = np.append(int_, policy)
+
+                    int_ = np.full((self.input_sequence,) + int_.shape, int_)
+                    state_batch_int.append(int_)
+            state_batch = np.asarray(state_batch)
+
+            #--- int
+            if len(self.uvfa_ext) == 0:
+                state_batch_ext = state_batch
+            else:
+                state_batch_ext = [state_batch, np.asarray(state_batch_ext)]
+            qvals_ext = self.actval_ext_model.predict(state_batch_ext, self.batch_size)
+            qvals_t_ext = self.actval_ext_model_target.predict(state_batch_ext, self.batch_size)
+            
+            #--- ext
+            if self.enable_intrinsic_actval_model:
+                if len(self.uvfa_ext) == 0:
+                    state_batch_int = state_batch
+                else:
+                    state_batch_int = [state_batch, np.asarray(state_batch_int)]
                 qvals_int = self.actval_int_model.predict(state_batch_int, self.batch_size)
                 qvals_t_int = self.actval_int_model_target.predict(state_batch_int, self.batch_size)
-
-            # burnin-1
-            if seq_i < self.burnin_length-1:
-                continue
-            hidden_states_arr.append([K.get_value(self.lstm.states[0]), K.get_value(self.lstm.states[1])])
-
-            if self.enable_intrinsic_reward:
-                hidden_states_arr_int.append([K.get_value(self.lstm.states[0]), K.get_value(self.lstm.states[1])])
 
             # burnin
             if seq_i < self.burnin_length:
                 continue
 
             state_batch_arr.append(state_batch)
-            qvals_arr.append(qvals)
-            target_qvals_arr.append(qvals_t)
+            state_batch_arr_ext.append(state_batch_ext)
+            qvals_arr_ext.append(qvals_ext)
+            target_qvals_arr_ext.append(qvals_t_ext)
 
-            if self.enable_intrinsic_reward:
+            if self.enable_intrinsic_actval_model:
                 state_batch_arr_int.append(state_batch_int)
                 qvals_arr_int.append(qvals_int)
                 target_qvals_arr_int.append(qvals_t_int)
 
         # train
         for seq_i in range(self.lstmful_input_length):
+            state0_index = seq_i
+            state1_index = seq_i + self.reward_multisteps
 
-            # state0 の Qval (multistep前)
-            state0_qvals = qvals_arr[seq_i]
-            if self.enable_intrinsic_reward:
-                state0_qvals_int = qvals_arr_int[seq_i]
+            # state0 Qval
+            state0_qvals = qvals_arr_ext[state0_index]
+            if self.enable_intrinsic_actval_model:
+                state0_qvals_int = qvals_arr_int[state0_index]
             
             # batch
             for batch_i in range(self.batch_size):
 
                 # maxq
                 if self.enable_double_dqn:
-                    max_action = qvals_arr[seq_i+self.reward_multisteps][batch_i].argmax()  # modelからアクションを出す
-                    maxq = target_qvals_arr[seq_i+self.reward_multisteps][batch_i][max_action]  # Q値はtarget_modelを使って出す
+                    max_action = qvals_arr_ext[state1_index][batch_i].argmax()
                 else:
-                    maxq = target_qvals_arr[seq_i+self.reward_multisteps][batch_i].max()
+                    max_action = target_qvals_arr_ext[state1_index][batch_i].argmax()
+                maxq = target_qvals_arr_ext[state1_index][batch_i][max_action]
 
                 policy_index = batchs[batch_i][7]
                 gamma = self.gamma_list[policy_index]
-                action = batchs[batch_i][1][seq_i]
-                reward = batchs[batch_i][2][seq_i]
+                action = batchs[batch_i][1][self.burnin_length + seq_i + self.reward_multisteps]
+                reward = batchs[batch_i][2][self.burnin_length + seq_i + self.reward_multisteps]
                 q0 = state0_qvals[batch_i][action]
 
                 # Calc
@@ -478,14 +600,15 @@ class Learner():
                 prioritys[batch_i].append(priority)
                 state0_qvals[batch_i][action] += td_error * weights[batch_i]
 
-                if self.enable_intrinsic_reward:
-                    if self.enable_double_dqn:
-                        max_action = qvals_arr_int[seq_i+self.reward_multisteps][batch_i].argmax()
-                        maxq = target_qvals_arr_int[seq_i+self.reward_multisteps][batch_i][max_action]
-                    else:
-                        maxq = target_qvals_arr_int[seq_i+self.reward_multisteps][batch_i].max()
-
-                    reward = batchs[batch_i][6][seq_i]
+                if self.enable_intrinsic_actval_model:
+                    # 多分内部報酬のQ値参照は外部報酬と合わせた方がいい
+                    #if self.enable_double_dqn:
+                    #    max_action = qvals_arr_int[state1_index][batch_i].argmax()
+                    #else:
+                    #    max_action = target_qvals_arr_int[state1_index][batch_i].argmax()
+                    maxq = target_qvals_arr_int[state1_index][batch_i][max_action]
+                    
+                    reward = batchs[batch_i][6][self.burnin_length + seq_i + self.reward_multisteps]
                     q0 = state0_qvals_int[batch_i][action]
 
                     # Calc
@@ -493,11 +616,11 @@ class Learner():
                     state0_qvals_int[batch_i][action] += td_error * weights[batch_i]
 
             # train
-            self.lstm.reset_states(hidden_states_arr[seq_i])
-            self.actval_ext_model.train_on_batch(state_batch_arr[seq_i], state0_qvals)
-            if self.enable_intrinsic_reward:
-                self.lstm_int.reset_states(hidden_states_arr_int[seq_i])
-                self.actval_int_model.train_on_batch(state_batch_arr_int[seq_i], state0_qvals_int)
+            self.lstm.reset_states(hidden_states_arr_ext[state0_index])
+            self.actval_ext_model.train_on_batch(state_batch_arr_ext[state0_index], state0_qvals)
+            if self.enable_intrinsic_actval_model:
+                self.lstm_int.reset_states(hidden_states_arr_int[state0_index])
+                self.actval_int_model.train_on_batch(state_batch_arr_int[state0_index], state0_qvals_int)
 
 
         # priority update
@@ -536,8 +659,6 @@ class Learner():
                 self.rnd_train_model.train_on_batch(state1, rnd_target_val)
 
 
-
-
     def add_exp(self, exp):
         reward = exp[3]
         terminal = exp[4]
@@ -554,6 +675,7 @@ class Learner():
         if self.episode_memory is not None:
             self.episode_memory_exp_list[actor_index].append(exp)
             self.total_reward_list[actor_index] += reward
+
 
         # terminal
         if terminal:

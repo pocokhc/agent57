@@ -33,10 +33,10 @@ class DQN(rl.core.Agent):
         memory_kwargs,
         action_policy,
 
-        # image_model
-        image_model=None,
-        image_model_emb=None,
-        image_model_rnd=None,
+        # input_model
+        input_model=None,
+        input_model_emb=None,
+        input_model_rnd=None,
 
         # optimizer
         optimizer_ext=None,
@@ -79,7 +79,9 @@ class DQN(rl.core.Agent):
         episode_verbose=1,
 
         # intrinsic_reward
-        enable_intrinsic_reward=False,
+        uvfa_ext=[],
+        uvfa_int=[],
+        enable_intrinsic_actval_model=False,
         int_episode_reward_k=10,
         int_episode_reward_epsilon=0.001,
         int_episode_reward_c=0.001,
@@ -88,7 +90,7 @@ class DQN(rl.core.Agent):
         int_episodic_memory_capacity=30000,
         rnd_err_capacity=10_000,
         rnd_max_reward=5,
-        policy_num=8,
+        policy_num=1,
         beta_max=0.3,
         gamma0=0.9999,
         gamma1=0.997,
@@ -100,20 +102,25 @@ class DQN(rl.core.Agent):
         # other
         processor=None,
         step_interval=1,
+        enable_add_episode_end_frame=True,
+        test_policy=0,
     ):
         super().__init__(processor)
         self.compiled = True  # super
 
         self.step_interval = step_interval
-        self.enable_intrinsic_reward = enable_intrinsic_reward
+        self.enable_add_episode_end_frame = enable_add_episode_end_frame
+
+        if not enable_intrinsic_actval_model:
+            uvfa_int = []
 
         # model
         model_builder = ModelBuilder(
             input_shape,
             input_type,
-            image_model,
-            image_model_emb,
-            image_model_rnd,
+            input_model,
+            input_model_emb,
+            input_model_rnd,
             batch_size,
             nb_actions,
             input_sequence,
@@ -131,7 +138,7 @@ class DQN(rl.core.Agent):
             nb_actions,
             target_model_update_interval,
             enable_double_dqn,
-            enable_intrinsic_reward,
+            enable_intrinsic_actval_model,
             lstm_type,
             memory,
             memory_kwargs,
@@ -160,6 +167,8 @@ class DQN(rl.core.Agent):
             gamma0,
             gamma1,
             gamma2,
+            uvfa_ext,
+            uvfa_int,
             actor_num=1,
         )
 
@@ -175,7 +184,7 @@ class DQN(rl.core.Agent):
                 "reward_multisteps": reward_multisteps,
                 "lstmful_input_length": lstmful_input_length,
                 "burnin_length": burnin_length,
-                "enable_intrinsic_reward": enable_intrinsic_reward,
+                "enable_intrinsic_actval_model": enable_intrinsic_actval_model,
                 "enable_rescaling": enable_rescaling,
                 "priority_exponent": priority_exponent,
                 "int_episode_reward_k": int_episode_reward_k,
@@ -187,6 +196,7 @@ class DQN(rl.core.Agent):
                 "rnd_err_capacity": rnd_err_capacity,
                 "rnd_max_reward": rnd_max_reward,
                 "policy_num": policy_num,
+                "test_policy": test_policy,
                 "beta_max": beta_max,
                 "gamma0": gamma0,
                 "gamma1": gamma1,
@@ -195,6 +205,8 @@ class DQN(rl.core.Agent):
                 "ucb_beta": ucb_beta,
                 "ucb_window_size": ucb_window_size,
                 "model_builder": model_builder,
+                "uvfa_ext": uvfa_ext,
+                "uvfa_int": uvfa_int,
                 "step_interval": step_interval,
             })
 
@@ -210,7 +222,7 @@ class DQN(rl.core.Agent):
             reward_multisteps,
             lstmful_input_length,
             burnin_length,
-            enable_intrinsic_reward,
+            enable_intrinsic_actval_model,
             enable_rescaling,
             priority_exponent,
             int_episode_reward_k,
@@ -222,6 +234,7 @@ class DQN(rl.core.Agent):
             rnd_err_capacity,
             rnd_max_reward,
             policy_num,
+            test_policy,
             beta_max,
             gamma0,
             gamma1,
@@ -230,6 +243,8 @@ class DQN(rl.core.Agent):
             ucb_beta,
             ucb_window_size,
             model_builder,
+            uvfa_ext,
+            uvfa_int,
             actor_index=0,
         )
 
@@ -245,7 +260,7 @@ class DQN(rl.core.Agent):
         self.repeated_action = 0
         self.step_reward = 0
         self.recent_terminal = False
-
+        
         
     def compile(self, optimizer, metrics=[]):  # override
         self.compiled = True  # super
@@ -262,14 +277,26 @@ class DQN(rl.core.Agent):
         action = self.repeated_action
         if self.recent_terminal or (self.local_step % self.step_interval == 0):
             self.actor.forward_train_before(observation)
-            exp = self.actor.create_exp(False)
-            if exp is not None:
-                self.learner.add_exp(exp)
-                self.learner.train()
+
+            if self.recent_terminal and self.enable_add_episode_end_frame:
+                # 最終フレーム後に1フレーム追加
+                exp = self.actor.create_exp(False, update_terminal=False)
+                if exp is not None:
+                    self.learner.add_exp(exp)
+                self.actor.add_episode_end_frame()
+                exp = self.actor.create_exp(False, update_terminal=True)
+                if exp is not None:
+                    self.learner.add_exp(exp)
+                    self.learner.train()
+            else:
+                exp = self.actor.create_exp(False)
+                if exp is not None:
+                    self.learner.add_exp(exp)
+                    self.learner.train()
+            
             action = self.actor.forward_train_after()
             self.repeated_action = action
 
-        self.local_step += 1  # (s,a)->(r,s+1) なのでここのタイミング
         return action
 
     
@@ -279,6 +306,8 @@ class DQN(rl.core.Agent):
         if terminal or (self.local_step % self.step_interval == 0):
             self.actor.backward(self.step_reward, terminal)
             self.step_reward = 0
+        
+        self.local_step += 1
         return []
     
     

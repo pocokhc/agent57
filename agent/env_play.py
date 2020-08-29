@@ -418,7 +418,7 @@ def add_memory(episode_save_dir, memory, model_builder, kwargs):
         kwargs["reward_multisteps"],
         kwargs["lstmful_input_length"],
         kwargs["burnin_length"],
-        kwargs["enable_intrinsic_reward"],
+        kwargs["enable_intrinsic_actval_model"],
         kwargs["enable_rescaling"],
         kwargs["priority_exponent"],
         kwargs["int_episode_reward_k"],
@@ -430,6 +430,7 @@ def add_memory(episode_save_dir, memory, model_builder, kwargs):
         kwargs["rnd_err_capacity"],
         kwargs["rnd_max_reward"],
         kwargs["policy_num"],
+        kwargs["test_policy"],
         kwargs["beta_max"],
         kwargs["gamma0"],
         kwargs["gamma1"],
@@ -438,6 +439,8 @@ def add_memory(episode_save_dir, memory, model_builder, kwargs):
         kwargs["ucb_beta"],
         kwargs["ucb_window_size"],
         model_builder,
+        kwargs["uvfa_ext"],
+        kwargs["uvfa_int"],
         0,
     )
     actor.build_model(None)

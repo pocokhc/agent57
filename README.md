@@ -77,3 +77,71 @@ examples にいくつか実行例が入っています。
 > python mountaincar.py
 ```
 
+
+# 2020/8 update
+UVFA回りを大幅に更新しました。
+更新に伴って変更したパラメータがあるので、ここに書いておきます。
+
+1. 入力モデルの変数名を変更
+```
+image_model
+image_model_emb
+image_model_rnd
+```
+↓
+```
+input_model
+input_model_emb
+input_model_rnd
+```
+
+2. 内部報酬の有効無効から、行動価値関数の有効無効に変更
+```
+enable_intrinsic_reward
+```
+↓
+```
+enable_intrinsic_actval_model
+```
+
+3. UVFAの入力項目を設定できるように追加
+
+・入力無し
+```
+uvfa_ext=[]  # 外部報酬の入力項目
+uvfa_int=[]  # 内部報酬の入力項目
+```
+
+・入力あり(全部ありの場合)
+```
+uvfa_ext=[
+  UvfaType.ACTION,
+  UvfaType.REWARD_EXT,
+  UvfaType.REWARD_INT,
+  UvfaType.POLICY,
+]
+uvfa_int=[
+  UvfaType.ACTION,
+  UvfaType.REWARD_EXT,
+  UvfaType.REWARD_INT,
+  UvfaType.POLICY,
+]
+```
+
+4. エピソード終了時に null フレームを追加するオプションを作成
+
+```
+enable_add_episode_end_frame=True
+```
+
+有効にするとエピソードの最後(terminal=True)のフレームに追加して、
+報酬0のnullフレームを経験メモリに追加します。
+
+
+5. テスト時に実行するポリシーを変更できるオプションを追加
+テスト時のpolicyは探索なしの0固定でしたが、これを任意に選択できるようなオプションを追加しました。
+
+```
+test_policy = 0
+```
+

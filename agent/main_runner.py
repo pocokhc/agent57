@@ -17,6 +17,7 @@ from .callbacks import DisTrainLogger, DisSaveManager
 
 
 
+
 def run_gym_dqn(
         enable_train,
         env,
@@ -76,8 +77,6 @@ def run_gym_dqn(
             callbacks.append(TimeStop(nb_time))
 
             agent.fit(env, nb_steps=nb_steps, visualize=False, verbose=0, callbacks=callbacks)
-            if test_env is not None:
-                test_env.close()
 
         except Exception:
             print(traceback.print_exc())
