@@ -1,3 +1,8 @@
+
+**NOTE**  
+Check out the code for [Simple Distributed Reinforcement Learning](https://github.com/pocokhc/simple_distributed_rl).  
+I am creating a reinforcement learning framework including Agent57.  
+
 # Agemt57(Deep Reinforcement Learning) for Keras-RL
 以下Qiita記事の実装コードとなります。
 コードの解説については記事を参照してください。
